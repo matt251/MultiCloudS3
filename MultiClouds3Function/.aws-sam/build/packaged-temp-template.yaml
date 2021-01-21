@@ -1,0 +1,9 @@
+Resources:
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 300
+      MemorySize: 128
+      Handler: multiclouds3.Handler
+      CodeUri: s3://lambdafunctionsmatthewtcom/5e6c5ed9cabcf0dc3e554faa9b192bb0
+      Runtime: java8
