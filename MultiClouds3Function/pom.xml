@@ -2,7 +2,7 @@
     xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <groupId>multiclouds3</groupId>
-    <artifactId>HMultiClouds3</artifactId>
+    <artifactId>MultiClouds3</artifactId>
     <version>1.0</version>
     <packaging>jar</packaging>
     <name>SAM CLI.</name>

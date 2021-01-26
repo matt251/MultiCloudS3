@@ -6,24 +6,43 @@ import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import javax.imageio.ImageIO;
+import com.amazonaws.AmazonServiceException;
+import com.amazonaws.services.s3.event.S3EventNotification.S3EventNotificationRecord;
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.HttpMethod;
+
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.imageio.ImageIO;
-
-import com.amazonaws.AmazonServiceException;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.S3Event;
 import com.amazonaws.services.lambda.runtime.events.models.s3.S3EventNotification;
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.event.S3EventNotification.S3EventNotificationRecord;
 import com.amazonaws.services.s3.model.GetObjectRequest;
-import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.s3.model.GeneratePresignedUrlRequest;
+
+import java.net.URI;
+import java.net.URL;
+
+import org.apache.http.HttpEntity;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ContentType;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.entity.FileEntity;
+import org.apache.http.client.utils.URIBuilder;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.util.EntityUtils;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -35,28 +54,42 @@ import org.slf4j.LoggerFactory;
 public class Handler implements RequestHandler<S3Event, String> {
 
     Gson gson = new GsonBuilder().setPrettyPrinting().create();
+
     private static final Logger logger = LoggerFactory.getLogger(Handler.class);
-    private static final float MAX_WIDTH = 100;
-    private static final float MAX_HEIGHT = 100;
+
     private final String JPG_TYPE = (String) "jpg";
     private final String JPG_MIME = (String) "image/jpeg";
     private final String PNG_TYPE = (String) "png";
     private final String PNG_MIME = (String) "image/png";
+
+    private static String subscriptionKey = "fad3da4e31594f858cfd97240cce9c74";
+    private static String endpoint = "https://visionmatthewtcom.cognitiveservices.azure.com/";
+
+    private static final String uriBase = endpoint + "vision/v3.0/describe";
+    private static final String imageToAnalyze = "https://upload.wikimedia.org/wikipedia/commons/" + "1/12/Broadway_and_Times_Square_by_night.jpg";
+
+    private static String firestoreendpoint = "https://firestore.googleapis.com/v1/projects/steadfast-bebop-273608/databases/(default)/documents/imagesdescribed/";
+
     @Override
 
     public String handleRequest(S3Event s3event, Context context) {
+
+        // my test bucket and key pverwritten by s3 event read
+
+        String srcBucket = "photobucketmatthewtcom";
+        String srcKey="inbound/IMG_20200222_130504803.jpg";
+
+        String jsondescriberesult = null;
+
         try {
-            logger.info("EVENT: " + gson.toJson(s3event));
-            //MT Changed S3Event NotifcationRecord type
+            logger.info("S3 EVENT: " + gson.toJson(s3event));
+
             S3EventNotification.S3EventNotificationRecord record = s3event.getRecords().get(0);
 
-            String srcBucket = record.getS3().getBucket().getName();
+            srcBucket = record.getS3().getBucket().getName();
 
             // Object key may have spaces or unicode non-ASCII characters.
-            String srcKey = record.getS3().getObject().getUrlDecodedKey();
-
-            String dstBucket = srcBucket;
-            String dstKey = "resized-" + srcKey;
+            srcKey = record.getS3().getObject().getUrlDecodedKey();
 
             // Infer the image type.
             Matcher matcher = Pattern.compile(".*\\.([^\\.]*)").matcher(srcKey);
@@ -70,64 +103,137 @@ public class Handler implements RequestHandler<S3Event, String> {
                 return "";
             }
 
-            // Download the image from S3 into a stream
-            AmazonS3 s3Client = AmazonS3ClientBuilder.defaultClient();
-            S3Object s3Object = s3Client.getObject(new GetObjectRequest(
-                    srcBucket, srcKey));
-            InputStream objectData = s3Object.getObjectContent();
 
-            // Read the source image
-            BufferedImage srcImage = ImageIO.read(objectData);
-            int srcHeight = srcImage.getHeight();
-            int srcWidth = srcImage.getWidth();
-            // Infer the scaling factor to avoid stretching the image
-            // unnaturally
-            float scalingFactor = Math.min(MAX_WIDTH / srcWidth, MAX_HEIGHT
-                    / srcHeight);
-            int width = (int) (scalingFactor * srcWidth);
-            int height = (int) (scalingFactor * srcHeight);
+            logger.info("start Microsoft congitive call block, working with image named " + srcKey + " from s3 "+ srcBucket);
 
-            BufferedImage resizedImage = new BufferedImage(width, height,
-                    BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = resizedImage.createGraphics();
-            // Fill with white before applying semi-transparent (alpha) images
-            g.setPaint(Color.white);
-            g.fillRect(0, 0, width, height);
-            // Simple bilinear resize
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-            g.drawImage(srcImage, 0, 0, width, height, null);
-            g.dispose();
-
-            // Re-encode image to target format
-            ByteArrayOutputStream os = new ByteArrayOutputStream();
-            ImageIO.write(resizedImage, imageType, os);
-            InputStream is = new ByteArrayInputStream(os.toByteArray());
-            // Set Content-Length and Content-Type
-            ObjectMetadata meta = new ObjectMetadata();
-            meta.setContentLength(os.size());
-            if (JPG_TYPE.equals(imageType)) {
-                meta.setContentType(JPG_MIME);
-            }
-            if (PNG_TYPE.equals(imageType)) {
-                meta.setContentType(PNG_MIME);
-            }
-
-            // Uploading to S3 destination bucket
-            logger.info("Writing to: " + dstBucket + "/" + dstKey);
             try {
-                s3Client.putObject(dstBucket, dstKey, is, meta);
+                AmazonS3 s3Client = AmazonS3ClientBuilder.defaultClient();
+                CloseableHttpClient httpClient = HttpClientBuilder.create().build();
+
+                // Set the presigned URL to expire after one hour.
+                java.util.Date expiration = new java.util.Date();
+                long expTimeMillis = expiration.getTime();
+                expTimeMillis += 1000 * 60 * 60;
+                expiration.setTime(expTimeMillis);
+
+                // generate a presigned url from the event key and bucket to send to Congitive services
+
+                logger.info("building a presigned URL src Bucket and key for cognitive " + srcBucket + " srcKey " + srcKey);
+
+                GeneratePresignedUrlRequest generatePresignedUrlRequest =
+                        new GeneratePresignedUrlRequest(srcBucket, srcKey)
+                                .withMethod(HttpMethod.GET)
+                                .withExpiration(expiration);
+
+                URL url = s3Client.generatePresignedUrl(generatePresignedUrlRequest);
+
+                logger.info("Generated presigned URL " + url.toString());
+
+                // setup to call Microsoft congitive services
+
+                URIBuilder builder = new URIBuilder(uriBase);
+                // Request parameters. All of them are optional.
+                builder.setParameter("visualFeatures", "Categories,Description,Color");
+
+                logger.info("calling endpoint uriBase " + uriBase);
+
+               // Prepare the URI for the REST API method.
+                URI uri = builder.build();
+                HttpPost request = new HttpPost(uri);
+
+                // Request headers.
+                request.setHeader("Content-Type", "application/json");
+                request.setHeader("Ocp-Apim-Subscription-Key", subscriptionKey);
+
+                // replace with imageToAnalyze const to test with static URL as needed
+
+                // Request body.
+                StringEntity requestEntity =
+                        new StringEntity("{\"url\":\"" + url.toString() + "\"}");
+                request.setEntity(requestEntity);
+
+               // Call the REST API method and get the response entity.
+
+                logger.info("calling endpoint from URIBuilder.build()" + uri.toString());
+                HttpResponse response = httpClient.execute(request);
+                logger.info("Response object " + response.toString());
+
+                HttpEntity entity = response.getEntity();
+
+                if (entity != null) {
+                    // Format and display the JSON response.
+                    jsondescriberesult = EntityUtils.toString(entity);
+                    logger.info("Describe service found the following  :\n");
+                    logger.info(jsondescriberesult);
+                 }
+
+                // and now call GCP if describe returned...
+                //
+                //
+
+                logger.info("Call to GCP Firestore");
+
+                if (jsondescriberesult !=null) {
+                    logger.info("result from congitive now call gcp firestore");
+
+                    CloseableHttpClient firestorehttpClient = HttpClientBuilder.create().build();
+
+                    Map<String, String> headers = new HashMap<>();
+                    headers.put("Content-Type", "application/json");
+                    headers.put("X-Custom-Header", "application/json");
+
+                    URIBuilder firestorebuilder = new URIBuilder(firestoreendpoint);
+
+                    // Request parameters. set the object key
+                    builder.setParameter("documentId", srcKey);
+
+                    logger.info("calling endpoint for firestore " + firestoreendpoint);
+
+                    // Prepare the URI for the REST API method.
+                    URI firestoreuri = firestorebuilder.build();
+                    HttpPost firestorerequest = new HttpPost(firestoreuri);
+
+                    // Request headers.
+                    firestorerequest.setHeader("Content-Type", "application/json");
+
+                    // Request body.
+
+                    String documentname="uniquedocument1";
+
+                    //String json_string = "{\r\n  \"fields\": {\r\n    \"Name\": {\r\n      \"stringValue\": \"Freshpak Rooibos Tea 80Pk\"\r\n    },\r\n    \"description\": {\r\n\t\t\"stringValue\": \"Freshpak Rooibos Tea 80Pkkk\"\r\n\t}\r\n  }\r\n}";
+
+
+                    // set the json string return from cognitive
+
+                    String json_string=jsondescriberesult;
+
+                    StringEntity firestorerequestEntity =  new StringEntity(json_string, ContentType.APPLICATION_JSON);
+                    firestorerequest.setEntity(firestorerequestEntity);
+                    logger.info("calling endpoint from URIBuilder.build()" + firestoreuri.toString());
+
+                    HttpResponse firestoreresponse = firestorehttpClient.execute(firestorerequest);
+
+                    logger.info("Firestore Response object " + firestoreresponse.toString());
+
+                    HttpEntity firestoreentity = firestoreresponse.getEntity();
+
+                    if (firestoreentity != null) {
+                        // Format and display the JSON response.
+                        jsondescriberesult = EntityUtils.toString(firestoreentity);
+                        logger.info("Firestore returned the following  :\n");
+                        logger.info(jsondescriberesult);
+                    }
+                }
+
+            } catch (Exception e) {
+                logger.info("Failed to call Congitive api\n");
+                logger.info(e.toString());
             }
-            catch(AmazonServiceException e)
-            {
-                logger.error(e.getErrorMessage());
-                System.exit(1);
-            }
-            logger.info("Successfully resized " + srcBucket + "/"
-                    + srcKey + " and uploaded to " + dstBucket + "/" + dstKey);
-            return "Ok";
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+
+            return "MultiClouds3 usercode completed";
+ } catch (Exception e) {
+             logger.info(e.getMessage());
+           throw new RuntimeException(e);
+         }
     }
 }
