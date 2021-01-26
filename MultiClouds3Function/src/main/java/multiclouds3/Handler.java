@@ -33,6 +33,7 @@ import com.amazonaws.services.s3.model.GeneratePresignedUrlRequest;
 import java.net.URI;
 import java.net.URL;
 
+import com.google.gson.JsonObject;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.methods.HttpPost;
@@ -77,7 +78,8 @@ public class Handler implements RequestHandler<S3Event, String> {
         // my test bucket and key pverwritten by s3 event read
 
         String srcBucket = "photobucketmatthewtcom";
-        String srcKey="inbound/IMG_20200222_130504803.jpg";
+        //default to override
+        String srcKey="errornokey.jpg";
 
         String jsondescriberesult = null;
 
@@ -85,7 +87,6 @@ public class Handler implements RequestHandler<S3Event, String> {
             logger.info("S3 EVENT: " + gson.toJson(s3event));
 
             S3EventNotification.S3EventNotificationRecord record = s3event.getRecords().get(0);
-
             srcBucket = record.getS3().getBucket().getName();
 
             // Object key may have spaces or unicode non-ASCII characters.
@@ -103,7 +104,6 @@ public class Handler implements RequestHandler<S3Event, String> {
                 return "";
             }
 
-
             logger.info("start Microsoft congitive call block, working with image named " + srcKey + " from s3 "+ srcBucket);
 
             try {
@@ -116,7 +116,7 @@ public class Handler implements RequestHandler<S3Event, String> {
                 expTimeMillis += 1000 * 60 * 60;
                 expiration.setTime(expTimeMillis);
 
-                // generate a presigned url from the event key and bucket to send to Congitive services
+                // generate a presigned url from the event key and bucket to send to Congitive services for it to process
 
                 logger.info("building a presigned URL src Bucket and key for cognitive " + srcBucket + " srcKey " + srcKey);
 
@@ -141,7 +141,9 @@ public class Handler implements RequestHandler<S3Event, String> {
                 URI uri = builder.build();
                 HttpPost request = new HttpPost(uri);
 
-                // Request headers.
+                // Request headers to include key
+                //TODO add key to paramterstore
+
                 request.setHeader("Content-Type", "application/json");
                 request.setHeader("Ocp-Apim-Subscription-Key", subscriptionKey);
 
@@ -167,9 +169,7 @@ public class Handler implements RequestHandler<S3Event, String> {
                     logger.info(jsondescriberesult);
                  }
 
-                // and now call GCP if describe returned...
-                //
-                //
+                // and now call GCP if describe returned a ressult returned...
 
                 logger.info("Call to GCP Firestore");
 
@@ -189,6 +189,7 @@ public class Handler implements RequestHandler<S3Event, String> {
 
                     logger.info("calling endpoint for firestore " + firestoreendpoint);
 
+                    // TODO change to authenticated endoint
                     // Prepare the URI for the REST API method.
                     URI firestoreuri = firestorebuilder.build();
                     HttpPost firestorerequest = new HttpPost(firestoreuri);
@@ -196,23 +197,34 @@ public class Handler implements RequestHandler<S3Event, String> {
                     // Request headers.
                     firestorerequest.setHeader("Content-Type", "application/json");
 
-                    // Request body.
+                    logger.info("params for json object " + srcBucket+srcKey + " " + jsondescriberesult);
 
-                    String documentname="uniquedocument1";
+                    // create json for firestore, three children
 
-                    //String json_string = "{\r\n  \"fields\": {\r\n    \"Name\": {\r\n      \"stringValue\": \"Freshpak Rooibos Tea 80Pk\"\r\n    },\r\n    \"description\": {\r\n\t\t\"stringValue\": \"Freshpak Rooibos Tea 80Pkkk\"\r\n\t}\r\n  }\r\n}";
+                    JsonObject keyname = new JsonObject();
+                    keyname.addProperty("stringValue", srcKey);
 
+                    JsonObject urltoimage = new JsonObject();
+                    urltoimage.addProperty("stringValue",srcBucket+"/"+srcKey);
 
-                    // set the json string return from cognitive
+                    JsonObject imagedes = new JsonObject();
+                    imagedes.addProperty("stringValue", jsondescriberesult.toString());
 
-                    String json_string=jsondescriberesult;
+                    JsonObject fields = new JsonObject();
 
-                    StringEntity firestorerequestEntity =  new StringEntity(json_string, ContentType.APPLICATION_JSON);
+                    fields.add("Name",keyname);
+                    fields.add("urltoimage",urltoimage);
+                    fields.add("imagedescription",imagedes);
+
+                    JsonObject firestoreputjson = new JsonObject();
+                    firestoreputjson.add("fields", fields);
+
+                    logger.info("calling endpoint from URIBuilder.build()" + firestoreputjson.toString());
+
+                    StringEntity firestorerequestEntity =  new StringEntity(firestoreputjson.toString());
                     firestorerequest.setEntity(firestorerequestEntity);
-                    logger.info("calling endpoint from URIBuilder.build()" + firestoreuri.toString());
 
                     HttpResponse firestoreresponse = firestorehttpClient.execute(firestorerequest);
-
                     logger.info("Firestore Response object " + firestoreresponse.toString());
 
                     HttpEntity firestoreentity = firestoreresponse.getEntity();
@@ -225,15 +237,19 @@ public class Handler implements RequestHandler<S3Event, String> {
                     }
                 }
 
+                // TODO exception handling
             } catch (Exception e) {
-                logger.info("Failed to call Congitive api\n");
+                logger.info("Failed to call API's\n");
                 logger.info(e.toString());
             }
 
-            return "MultiClouds3 usercode completed";
+            return "MultiClouds3 completed";
  } catch (Exception e) {
              logger.info(e.getMessage());
            throw new RuntimeException(e);
          }
     }
 }
+
+
+//String json_string = "{\r\n  \"fields\": {\r\n    \"Name\": {\r\n      \"stringValue\": \"Freshpak Rooibos Tea 80Pk\"\r\n    },\r\n    \"description\": {\r\n\t\t\"stringValue\": \"Freshpak Rooibos Tea 80Pkkk\"\r\n\t}\r\n  }\r\n}";

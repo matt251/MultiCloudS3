@@ -5,5 +5,5 @@ Resources:
       Timeout: 300
       MemorySize: 128
       Handler: multiclouds3.Handler
-      CodeUri: s3://lambdafunctionsmatthewtcom/1c81c3f0cc4c31d5ee38dbaaf5cbd854
+      CodeUri: s3://lambdafunctionsmatthewtcom/4118baed41552311f5be9af13f7739e8
       Runtime: java8
